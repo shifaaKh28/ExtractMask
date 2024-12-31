@@ -1,154 +1,128 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-import os
 
-def detect_circle(image):
+def detect_circle_and_extract(image):
     """
-    Detect and visualize only the circle in the image
-    
+    Detect the circle and extract its parameters from the input image.
+
     Parameters:
-    image (numpy.ndarray): Input image
-    
+    - image (numpy.ndarray): Input image.
+
     Returns:
-    tuple: (processed_image, circle_parameters)
+    - extracted_shape (numpy.ndarray): Shape extracted based on circle mask.
+    - detected_circle (tuple): Circle parameters (x, y, radius).
     """
-    # Convert to RGB if grayscale
-    if len(image.shape) == 2:
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-    else:
-        image_rgb = image.copy()
-    
-    # Convert to grayscale for processing
-    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # Find circles
+
+    # Detect circles using Hough Transform
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
-        dp=1,
-        minDist=min(gray.shape),
+        dp=1.2,
+        minDist=gray.shape[0] // 4,
         param1=50,
         param2=30,
-        minRadius=min(gray.shape) // 3,
-        maxRadius=min(gray.shape) // 2
+        minRadius=gray.shape[0] // 6,
+        maxRadius=gray.shape[0] // 2
     )
-    
+
     if circles is not None:
+        # Take the first detected circle
         circles = np.round(circles[0, :]).astype("int")
-        largest_circle = circles[0]
-        
-        # Draw only the circle
-        circle_visualization = image_rgb.copy()
-        cv2.circle(circle_visualization,
-                  center=(largest_circle[0], largest_circle[1]),
-                  radius=largest_circle[2] + 5,
-                  color=(255, 0, 0),  # Red
-                  thickness=2)
-        
-        return circle_visualization, largest_circle
-    
-    return image_rgb, None
-def detect_internal_shape(image, circle_params):
+        circle = circles[0]  # Assuming the largest/most prominent circle
+
+        # Create a mask for the circle
+        mask = np.zeros_like(gray)
+        cv2.circle(mask, (circle[0], circle[1]), circle[2], 255, -1)
+
+        # Apply the mask to the image to isolate the shape
+        extracted_shape = cv2.bitwise_and(gray, gray, mask=mask)
+        return extracted_shape, circle
+
+    return None, None
+
+def refine_internal_shape_with_textures(image, circle_params):
     """
-    Detect and visualize the shape inside the detected circle using Canny edge detection.
-    
+    Detect the internal textures and refine the internal shape within the circle.
+
     Parameters:
-    image (numpy.ndarray): Input image
-    circle_params: Parameters of the detected circle (center_x, center_y, radius)
-    
+    - image (numpy.ndarray): Input image.
+    - circle_params (tuple): Detected circle parameters (x, y, radius).
+
     Returns:
-    tuple: (processed_image, shape_name, internal_mask)
+    - refined_texture_shape (numpy.ndarray): Image with the internal textures highlighted.
     """
     if circle_params is None:
-        return image, "no circle detected", None
+        print("No circle detected. Cannot refine internal shape with textures.")
+        return image
 
-    image_rgb = image.copy()
-    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Apply Canny edge detection
-    edges = cv2.Canny(blurred, 100, 200)
-
-    # Create circular mask
+    # Create a mask for the inner circle area
     circle_mask = np.zeros_like(gray)
     cx, cy, r = circle_params
-    cv2.circle(circle_mask, (cx, cy), r, 255, -1)
+    cv2.circle(circle_mask, (cx, cy), r - 5, 255, -1)
+
+    # Enhance edges using Canny
+    edges = cv2.Canny(blurred, 50, 150)
 
     # Apply the mask to the edges
     masked_edges = cv2.bitwise_and(edges, circle_mask)
 
-    # Filter contours
+    # Find contours and draw them on an empty black image
     contours, _ = cv2.findContours(masked_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    internal_mask = np.zeros_like(masked_edges)
+    refined_texture_shape = np.zeros_like(image)
+    cv2.drawContours(refined_texture_shape, contours, -1, (0, 255, 0), 1)
 
-    for cnt in contours:
-        # Check if the contour's points are entirely within a smaller circle (excludes the boundary)
-        inside = True
-        for point in cnt:
-            x, y = point[0]
-            distance_to_center = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-            if distance_to_center >= r - 10:  # Allow a margin near the edge
-                inside = False
-                break
-        if inside:
-            cv2.drawContours(internal_mask, [cnt], -1, 255, thickness=cv2.FILLED)
+    return refined_texture_shape
 
-    # Visualize the internal contours
-    shape_visualization = image_rgb.copy()
-    shape_visualization[internal_mask != 0] = (0, 255, 0)  # Green edges
-
-    return shape_visualization, "internal shape", internal_mask
-
-
-
-def process_image_in_steps(image_path):
+def process_image(image_path):
     """
-    Process a single image showing each step separately
-    
+    Processes the image to detect a circle and refine the internal shape with textures.
+
     Parameters:
-    image_path (str): Path to the input image
-    
+    - image_path (str): Path to the input image.
+
     Returns:
-    None
+    - None
     """
     # Read the image
     img = cv2.imread(image_path)
     if img is None:
         print(f"Error: Could not read the image at {image_path}")
         return
-    
-    # Step 1: Detect circle
-    circle_image, circle_params = detect_circle(img)
-    
-    # Step 2: Detect and color internal shape
-    shape_image, _, internal_mask = detect_internal_shape(img, circle_params)
-    
-    # Step 3: Final result with only the internal green contour
-    final_image = np.zeros_like(img)
-    if internal_mask is not None:
-        final_image[internal_mask != 0] = (0, 255, 0)  # Green contour only
-    
-    # Combine steps into one visualization
-    combined_image = np.hstack([circle_image, shape_image, final_image])
-    
-    # Add titles to the steps
-    height, width, _ = combined_image.shape
-    title_bar = np.zeros((50, width, 3), dtype=np.uint8)
-    
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(title_bar, "Step 1: Circle Detection", (50, 30), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(title_bar, "Step 2: Shape Detection", (width // 3 + 50, 30), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(title_bar, "Step 3: Final Result", (2 * width // 3 + 50, 30), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    
-    final_combined = np.vstack([title_bar, combined_image])
-    
-    # Save the combined result
-    output_path = "combined_result.jpg"
-    cv2.imwrite(output_path, final_combined)
-    print(f"Saved combined result to {output_path}")
 
+    # Step 1: Detect Circle
+    detected_shape, detected_circle = detect_circle_and_extract(img)
+
+    if detected_circle is not None:
+        # Step 2: Refine Internal Shape Detection with Textures
+        refined_texture_shape = refine_internal_shape_with_textures(img, detected_circle)
+
+        # Save the result
+        output_path = "refined_texture_shape_output.png"
+        cv2.imwrite(output_path, refined_texture_shape)
+        print(f"Refined texture shape saved at {output_path}")
+
+        # Display results
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("Original Image")
+        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        plt.axis('off')
+
+        plt.subplot(1, 2, 2)
+        plt.title("Refined Texture Shape")
+        plt.imshow(cv2.cvtColor(refined_texture_shape, cv2.COLOR_BGR2RGB))
+        plt.axis('off')
+        plt.show()
+    else:
+        print("Circle detection failed. Could not process further.")
+
+# Example usage
 if __name__ == "__main__":
-    image_path = "img1.png"  # Path to your single image
-    process_image_in_steps(image_path)
+    image_path = "img3.png"  # Replace with your input image path
+    process_image(image_path)
