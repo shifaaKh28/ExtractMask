@@ -2,127 +2,89 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-def detect_circle_and_extract(image):
+def enhance_inner_shape_segmentation(image_path):
     """
-    Detect the circle and extract its parameters from the input image.
-
-    Parameters:
-    - image (numpy.ndarray): Input image.
+    Enhances the segmentation clarity of the inner shape of a specimen.
+    
+    Args:
+        image_path (str): Path to the input image.
 
     Returns:
-    - extracted_shape (numpy.ndarray): Shape extracted based on circle mask.
-    - detected_circle (tuple): Circle parameters (x, y, radius).
+        dilated_edges: Enhanced edges after applying dilation.
+        mask: Refined mask for the largest contour.
+        segmented_inner_shape: Segmented inner shape of the specimen.
     """
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Step 1: Load the image in grayscale
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    
+    # Step 2: Apply CLAHE for contrast enhancement
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced_image = clahe.apply(image)
+    
+    # Step 3: Smooth the image
+    smoothed_image = cv2.GaussianBlur(enhanced_image, (5, 5), 0)
+    
+    # Step 4: Detect edges using Canny
+    edges = cv2.Canny(smoothed_image, 50, 150)
+    
+    # Step 5: Apply dilation to strengthen the edges
+    kernel = np.ones((3, 3), np.uint8)
+    dilated_edges = cv2.dilate(edges, kernel, iterations=1)
+    
+    # Step 6: Detect contours and focus on the largest
+    contours, _ = cv2.findContours(dilated_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask = np.zeros_like(image)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        cv2.drawContours(mask, [largest_contour], -1, 255, thickness=-1)
+    
+    # Step 7: Apply the mask to isolate the inner shape
+    segmented_inner_shape = cv2.bitwise_and(image, image, mask=mask)
+    
+    return dilated_edges, mask, segmented_inner_shape
 
-    # Detect circles using Hough Transform
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=gray.shape[0] // 4,
-        param1=50,
-        param2=30,
-        minRadius=gray.shape[0] // 6,
-        maxRadius=gray.shape[0] // 2
-    )
-
-    if circles is not None:
-        # Take the first detected circle
-        circles = np.round(circles[0, :]).astype("int")
-        circle = circles[0]  # Assuming the largest/most prominent circle
-
-        # Create a mask for the circle
-        mask = np.zeros_like(gray)
-        cv2.circle(mask, (circle[0], circle[1]), circle[2], 255, -1)
-
-        # Apply the mask to the image to isolate the shape
-        extracted_shape = cv2.bitwise_and(gray, gray, mask=mask)
-        return extracted_shape, circle
-
-    return None, None
-
-def refine_internal_shape_with_textures(image, circle_params):
+# Example usage with visualization
+def process_and_display_segmentation(image_path):
     """
-    Detect the internal textures and refine the internal shape within the circle.
+    Processes the input image using the enhanced segmentation method
+    and visualizes the results.
 
-    Parameters:
-    - image (numpy.ndarray): Input image.
-    - circle_params (tuple): Detected circle parameters (x, y, radius).
-
-    Returns:
-    - refined_texture_shape (numpy.ndarray): Image with the internal textures highlighted.
+    Args:
+        image_path (str): Path to the input image.
     """
-    if circle_params is None:
-        print("No circle detected. Cannot refine internal shape with textures.")
-        return image
+    # Perform enhanced segmentation
+    dilated_edges, mask, segmented_inner_shape = enhance_inner_shape_segmentation(image_path)
+    
+    # Display results
+    plt.figure(figsize=(20, 10))
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Original image
+    plt.subplot(2, 3, 1)
+    plt.title("Original Image")
+    plt.imshow(cv2.imread(image_path, cv2.IMREAD_GRAYSCALE), cmap='gray')
+    plt.axis('off')
 
-    # Create a mask for the inner circle area
-    circle_mask = np.zeros_like(gray)
-    cx, cy, r = circle_params
-    cv2.circle(circle_mask, (cx, cy), r - 5, 255, -1)
+    # Dilated edges
+    plt.subplot(2, 3, 2)
+    plt.title("Dilated Edges")
+    plt.imshow(dilated_edges, cmap='gray')
+    plt.axis('off')
 
-    # Enhance edges using Canny
-    edges = cv2.Canny(blurred, 50, 150)
+    # Enhanced mask
+    plt.subplot(2, 3, 3)
+    plt.title("Enhanced Mask")
+    plt.imshow(mask, cmap='gray')
+    plt.axis('off')
 
-    # Apply the mask to the edges
-    masked_edges = cv2.bitwise_and(edges, circle_mask)
+    # Segmented inner shape (enhanced)
+    plt.subplot(2, 3, 4)
+    plt.title("Segmented Inner Shape (Enhanced)")
+    plt.imshow(segmented_inner_shape, cmap='gray')
+    plt.axis('off')
 
-    # Find contours and draw them on an empty black image
-    contours, _ = cv2.findContours(masked_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    refined_texture_shape = np.zeros_like(image)
-    cv2.drawContours(refined_texture_shape, contours, -1, (0, 255, 0), 1)
-
-    return refined_texture_shape
-
-def process_image(image_path):
-    """
-    Processes the image to detect a circle and refine the internal shape with textures.
-
-    Parameters:
-    - image_path (str): Path to the input image.
-
-    Returns:
-    - None
-    """
-    # Read the image
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Error: Could not read the image at {image_path}")
-        return
-
-    # Step 1: Detect Circle
-    detected_shape, detected_circle = detect_circle_and_extract(img)
-
-    if detected_circle is not None:
-        # Step 2: Refine Internal Shape Detection with Textures
-        refined_texture_shape = refine_internal_shape_with_textures(img, detected_circle)
-
-        # Save the result
-        output_path = "refined_texture_shape_output.png"
-        cv2.imwrite(output_path, refined_texture_shape)
-        print(f"Refined texture shape saved at {output_path}")
-
-        # Display results
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1)
-        plt.title("Original Image")
-        plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        plt.axis('off')
-
-        plt.subplot(1, 2, 2)
-        plt.title("Refined Texture Shape")
-        plt.imshow(cv2.cvtColor(refined_texture_shape, cv2.COLOR_BGR2RGB))
-        plt.axis('off')
-        plt.show()
-    else:
-        print("Circle detection failed. Could not process further.")
+    plt.tight_layout()
+    plt.show()
 
 # Example usage
-if __name__ == "__main__":
-    image_path = "img3.png"  # Replace with your input image path
-    process_image(image_path)
+image_path = 'path_to_your_image.tif'  # Replace with your image path
+process_and_display_segmentation(image_path)
